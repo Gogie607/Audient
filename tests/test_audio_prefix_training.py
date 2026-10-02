@@ -241,6 +241,82 @@ class AudioPrefixTrainingTests(unittest.TestCase):
                 "text": ["test"],
             })
 
+    def test_position_weighted_contrast_reports_region_metrics(self):
+        wrapper, core = make_system()
+        params = DummyParams({
+            "semantic_weight": 1.0,
+            "semantic_contrast_weight": 0.25,
+            "semantic_contrast_margin": 0.5,
+            "semantic_first_weight": 4.0,
+            "semantic_early_weight": 2.0,
+            "semantic_middle_weight": 1.0,
+            "semantic_remaining_weight": 1.0,
+            "contrast_first_weight": 4.0,
+            "contrast_early_weight": 2.0,
+            "contrast_middle_weight": 1.0,
+        })
+        module = create_audio_prefix_training_module(
+            model=wrapper,
+            language_core=core,
+            params=params,
+            train_mode=wrapper.get_mode(),
+            eval_mode=wrapper.get_mode(),
+            include_traits=False,
+            semantic_objective="position_weighted",
+            enable_audio_contrast=True,
+        )
+
+        loss, payload = module.compute({
+            "audio_encoding": torch.randn(2, 6, 8),
+            "duration_s": [3.0, 2.5],
+            "text": ["first", "different"],
+        })
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertEqual(set(payload.objective_losses), {
+            "semantic_position_weighted",
+            "semantic_audio_contrast",
+            "total",
+        })
+        self.assertIn("semantic/first_loss", payload.metrics)
+        self.assertIn("semantic/early_accuracy", payload.metrics)
+        self.assertIn(
+            "semantic/contrast_first_logp_advantage", payload.metrics
+        )
+        self.assertIn("semantic/token_loss", payload.metrics)
+
+    def test_contrast_rejects_single_sample_batch(self):
+        wrapper, core = make_system()
+        params = DummyParams({
+            "semantic_weight": 1.0,
+            "semantic_contrast_weight": 0.25,
+            "semantic_contrast_margin": 0.5,
+            "semantic_first_weight": 4.0,
+            "semantic_early_weight": 2.0,
+            "semantic_middle_weight": 1.0,
+            "semantic_remaining_weight": 1.0,
+            "contrast_first_weight": 4.0,
+            "contrast_early_weight": 2.0,
+            "contrast_middle_weight": 1.0,
+        })
+        module = create_audio_prefix_training_module(
+            model=wrapper,
+            language_core=core,
+            params=params,
+            train_mode=wrapper.get_mode(),
+            eval_mode=wrapper.get_mode(),
+            include_traits=False,
+            semantic_objective="position_weighted",
+            enable_audio_contrast=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "batch_size >= 2"):
+            module.compute({
+                "audio_encoding": torch.randn(1, 6, 8),
+                "duration_s": [3.0],
+                "text": ["test"],
+            })
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -179,8 +179,18 @@ class QwenLanguageCore(nn.Module):
                 f"Qwen expects hidden size {self.hidden_size}, "
                 f"received {inputs_embeds.shape[-1]}"
             )
-        if attention_mask is not None and attention_mask.shape != inputs_embeds.shape[:2]:
-            raise ValueError("attention_mask must have shape [batch, tokens]")
+        past_key_values = kwargs.get("past_key_values")
+        if attention_mask is not None:
+            if past_key_values is None and attention_mask.shape != inputs_embeds.shape[:2]:
+                raise ValueError("attention_mask must have shape [batch, tokens]")
+            if past_key_values is not None and (
+                attention_mask.shape[0] != inputs_embeds.shape[0]
+                or attention_mask.shape[1] < inputs_embeds.shape[1]
+            ):
+                raise ValueError(
+                    "cached attention_mask must match the batch and include "
+                    "the current input tokens"
+                )
         if labels is not None and labels.shape != inputs_embeds.shape[:2]:
             raise ValueError("labels must have shape [batch, tokens]")
 

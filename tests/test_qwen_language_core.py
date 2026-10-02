@@ -95,6 +95,16 @@ class QwenLanguageCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             core(inputs_embeds=torch.randn(1, 2, 8))
 
+    def test_cached_forward_accepts_accumulated_attention_mask(self) -> None:
+        core = make_core()
+        output = core(
+            inputs_embeds=torch.randn(1, 1, 16),
+            attention_mask=torch.ones(1, 6, dtype=torch.long),
+            past_key_values=object(),
+        )
+
+        self.assertEqual(output.logits.shape, (1, 1, 32))
+
     def test_configuration_factory_loads_external_objects(self) -> None:
         model_factory = RecordingFactory(FakeQwen())
         tokenizer_factory = RecordingFactory(FakeTokenizer())

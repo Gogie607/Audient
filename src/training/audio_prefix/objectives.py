@@ -13,6 +13,27 @@ from runweaver_ml.phase_control import TrainingObjective
 from .payloads import MetricValue
 
 
+POSITION_REGIONS = {
+    "first": (1, 1),
+    "early": (2, 4),
+    "middle": (5, 8),
+    "remaining": (9, None),
+}
+
+DEFAULT_POSITION_WEIGHT_PARAMETERS = {
+    "first": "semantic_first_weight",
+    "early": "semantic_early_weight",
+    "middle": "semantic_middle_weight",
+    "remaining": "semantic_remaining_weight",
+}
+
+DEFAULT_CONTRAST_POSITION_WEIGHT_PARAMETERS = {
+    "first": "contrast_first_weight",
+    "early": "contrast_early_weight",
+    "middle": "contrast_middle_weight",
+}
+
+
 class WeightedObjective(TrainingObjective):
     def __init__(self, name: str, *, weight_parameter: str):
         if not weight_parameter:
@@ -90,6 +111,192 @@ class SemanticTokenObjective(WeightedObjective):
         self.last_loss = float(loss.detach().item())
         payload.objective_losses[self.name] = self.last_loss
         return loss * self.resolved_weight(params)
+
+
+def _aligned_tokens(context):
+    logits = context.get("logits")[:, :-1, :]
+    labels = context.get("labels")[:, 1:]
+    valid = labels.ne(-100)
+    positions = valid.long().cumsum(dim=1)
+    return logits, labels, valid, positions
+
+
+def _region_mask(valid: Tensor, positions: Tensor, region: str) -> Tensor:
+    start, end = POSITION_REGIONS[region]
+    mask = valid.logical_and(positions >= start)
+    if end is not None:
+        mask = mask.logical_and(positions <= end)
+    return mask
+
+
+def _unreduced_token_nll(logits: Tensor, labels: Tensor) -> Tensor:
+    return functional.cross_entropy(
+        logits.transpose(1, 2),
+        labels,
+        ignore_index=-100,
+        reduction="none",
+    )
+
+
+class PositionWeightedSemanticObjective(WeightedObjective):
+    """Teacher-forced CE formed from independently normalized position groups."""
+
+    def __init__(
+        self,
+        *,
+        weight_parameter: str = "semantic_weight",
+        position_weight_parameters=None,
+    ):
+        super().__init__("semantic_position_weighted", weight_parameter=weight_parameter)
+        self.position_weight_parameters = dict(
+            position_weight_parameters or DEFAULT_POSITION_WEIGHT_PARAMETERS
+        )
+        if set(self.position_weight_parameters) != set(POSITION_REGIONS):
+            raise ValueError(
+                "position weights must define first, early, middle, and remaining"
+            )
+
+    def compute(self, context, params):
+        context.require("logits", "labels", "payload")
+        logits, labels, valid, positions = _aligned_tokens(context)
+        token_count = int(valid.sum().item())
+        if token_count == 0:
+            raise ValueError("semantic objective received no target tokens")
+        token_nll = _unreduced_token_nll(logits, labels)
+        weighted_loss = logits.new_zeros(())
+        active_weight = 0.0
+        payload = context.get("payload")
+        predictions = logits.argmax(dim=-1)
+
+        for region, parameter_name in self.position_weight_parameters.items():
+            mask = _region_mask(valid, positions, region)
+            count = int(mask.sum().item())
+            if count == 0:
+                continue
+            weight = self._resolved_region_weight(params, parameter_name)
+            region_loss = token_nll.masked_select(mask).mean()
+            weighted_loss = weighted_loss + weight * region_loss
+            active_weight += weight
+            correct = predictions.eq(labels).logical_and(mask).sum()
+            payload.metrics[f"semantic/{region}_loss"] = MetricValue(
+                float(token_nll.masked_select(mask).detach().sum().item()), count
+            )
+            payload.metrics[f"semantic/{region}_accuracy"] = MetricValue(
+                float(correct.detach().item()), count
+            )
+        if active_weight <= 0:
+            raise ValueError("semantic position weights have no positive active weight")
+        loss = weighted_loss / active_weight
+        self._record_legacy_metrics(
+            payload, logits, labels, valid, token_nll, predictions
+        )
+        self.last_loss = float(loss.detach().item())
+        payload.objective_losses[self.name] = self.last_loss
+        return loss * self.resolved_weight(params)
+
+    @staticmethod
+    def _resolved_region_weight(params, name: str) -> float:
+        if params is None or not params.has(name):
+            raise KeyError(f"missing required position weight {name!r}")
+        weight = float(params.get(name))
+        if weight < 0:
+            raise ValueError(f"position weight {name!r} must be non-negative")
+        return weight
+
+    @staticmethod
+    def _record_legacy_metrics(
+        payload, logits, labels, valid, token_nll, predictions
+    ) -> None:
+        token_count = int(valid.sum().item())
+        correct = predictions.eq(labels).logical_and(valid).sum()
+        top_k = min(5, logits.shape[-1])
+        top5_correct = logits.topk(top_k, dim=-1).indices.eq(
+            labels.clamp_min(0).unsqueeze(-1)
+        ).any(dim=-1).logical_and(valid).sum()
+        payload.metrics["semantic/token_loss"] = MetricValue(
+            float(token_nll.masked_select(valid).detach().sum().item()), token_count
+        )
+        payload.metrics["semantic/token_accuracy"] = MetricValue(
+            float(correct.detach().item()), token_count
+        )
+        payload.metrics["semantic/top5_accuracy"] = MetricValue(
+            float(top5_correct.detach().item()), token_count
+        )
+        payload.predicted_token_ids = predictions.detach().cpu()
+        payload.target_token_ids = labels.detach().cpu()
+        payload.target_token_mask = valid.detach().cpu()
+
+
+class SemanticAudioContrastObjective(WeightedObjective):
+    """Require correct audio to support early targets more than shuffled audio."""
+
+    def __init__(
+        self,
+        *,
+        weight_parameter: str = "semantic_contrast_weight",
+        margin_parameter: str = "semantic_contrast_margin",
+        position_weight_parameters=None,
+    ):
+        super().__init__("semantic_audio_contrast", weight_parameter=weight_parameter)
+        self.margin_parameter = margin_parameter
+        self.position_weight_parameters = dict(
+            position_weight_parameters
+            or DEFAULT_CONTRAST_POSITION_WEIGHT_PARAMETERS
+        )
+        expected = {"first", "early", "middle"}
+        if set(self.position_weight_parameters) != expected:
+            raise ValueError(
+                "contrast position weights must define first, early, and middle"
+            )
+
+    def compute(self, context, params):
+        context.require("logits", "shuffled_logits", "labels", "payload")
+        correct_logits, labels, valid, positions = _aligned_tokens(context)
+        shuffled_logits = context.get("shuffled_logits")[:, :-1, :]
+        if shuffled_logits.shape != correct_logits.shape:
+            raise ValueError("correct and shuffled logits must have matching shapes")
+        correct_nll = _unreduced_token_nll(correct_logits, labels)
+        shuffled_nll = _unreduced_token_nll(shuffled_logits, labels)
+        logp_advantage = shuffled_nll - correct_nll
+        margin = self._resolved_margin(params)
+        hinge = functional.relu(margin - logp_advantage)
+        weighted_loss = correct_logits.new_zeros(())
+        active_weight = 0.0
+        payload = context.get("payload")
+
+        for region, parameter_name in self.position_weight_parameters.items():
+            mask = _region_mask(valid, positions, region)
+            count = int(mask.sum().item())
+            if count == 0:
+                continue
+            weight = PositionWeightedSemanticObjective._resolved_region_weight(
+                params, parameter_name
+            )
+            region_loss = hinge.masked_select(mask).mean()
+            weighted_loss = weighted_loss + weight * region_loss
+            active_weight += weight
+            advantage_values = logp_advantage.masked_select(mask)
+            satisfied = advantage_values.ge(margin).sum()
+            payload.metrics[f"semantic/contrast_{region}_logp_advantage"] = MetricValue(
+                float(advantage_values.detach().sum().item()), count
+            )
+            payload.metrics[f"semantic/contrast_{region}_margin_satisfaction"] = MetricValue(
+                float(satisfied.detach().item()), count
+            )
+        if active_weight <= 0:
+            raise ValueError("contrast position weights have no positive active weight")
+        loss = weighted_loss / active_weight
+        self.last_loss = float(loss.detach().item())
+        payload.objective_losses[self.name] = self.last_loss
+        return loss * self.resolved_weight(params)
+
+    def _resolved_margin(self, params) -> float:
+        if params is None or not params.has(self.margin_parameter):
+            raise KeyError(f"missing required contrast margin {self.margin_parameter!r}")
+        margin = float(params.get(self.margin_parameter))
+        if margin <= 0:
+            raise ValueError("semantic contrast margin must be positive")
+        return margin
 
 
 class SpeechTraitObjective(WeightedObjective):

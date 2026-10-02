@@ -5,7 +5,12 @@ from .composer import AudioObjectiveComposer
 from .factory import create_audio_prefix_training_module
 from .forward import AudioPrefixForward
 from .metrics import AudioPrefixMetrics
-from .objectives import SemanticTokenObjective, SpeechTraitObjective
+from .objectives import (
+    PositionWeightedSemanticObjective,
+    SemanticAudioContrastObjective,
+    SemanticTokenObjective,
+    SpeechTraitObjective,
+)
 from .payloads import AudioPrefixPayload, MetricValue, TeacherForcedInputs
 
 __all__ = [
@@ -17,6 +22,8 @@ __all__ = [
     "JsonSnapshotWriter",
     "MetricValue",
     "SemanticTokenObjective",
+    "PositionWeightedSemanticObjective",
+    "SemanticAudioContrastObjective",
     "SpeechTraitObjective",
     "TeacherForcedInputs",
     "create_audio_prefix_training_module",

@@ -31,12 +31,14 @@ class AudioPrefixForward:
         prompt: str = "",
         sample_rate: int = 16_000,
         temporal_trait_groups: tuple[str, ...] = ("timing", "energy", "pitch"),
+        include_shuffled_semantic: bool = False,
     ) -> None:
         self.language_core = language_core
         self.provider_name = provider_name
         self.prompt = prompt
         self.sample_rate = sample_rate
         self.temporal_trait_groups = temporal_trait_groups
+        self.include_shuffled_semantic = include_shuffled_semantic
 
     def __call__(self, context: TrainingContext, model) -> TrainingContext:
         batch = context.batch
@@ -59,6 +61,36 @@ class AudioPrefixForward:
             attention_mask=language_inputs.attention_mask,
         )
 
+        shuffled_logits = None
+        if self.include_shuffled_semantic:
+            if encodings.shape[0] < 2:
+                raise ValueError(
+                    "matched-vs-shuffled semantic training requires batch_size >= 2"
+                )
+            order = torch.roll(
+                torch.arange(encodings.shape[0], device=representation.semantic.values.device),
+                1,
+            )
+            shuffled_values = representation.semantic.values.detach().index_select(
+                0, order
+            )
+            shuffled_mask = representation.semantic.padding_mask
+            if shuffled_mask is not None:
+                shuffled_mask = shuffled_mask.detach().index_select(
+                    0, order.to(shuffled_mask.device)
+                )
+            shuffled_inputs = self.build_language_inputs(
+                shuffled_values, shuffled_mask, texts
+            )
+            if not torch.equal(shuffled_inputs.labels, language_inputs.labels):
+                raise RuntimeError("shuffled branch changed transcript labels")
+            with torch.no_grad():
+                shuffled_output = self.language_core(
+                    inputs_embeds=shuffled_inputs.inputs_embeds,
+                    attention_mask=shuffled_inputs.attention_mask,
+                )
+            shuffled_logits = shuffled_output.logits
+
         payload = AudioPrefixPayload(
             batch_size=encodings.shape[0],
             sample_ids=self._metadata_values(batch, "sample_id", encodings.shape[0]),
@@ -68,6 +100,8 @@ class AudioPrefixForward:
         context.put("representation", representation)
         context.put("logits", output.logits)
         context.put("labels", language_inputs.labels)
+        if shuffled_logits is not None:
+            context.put("shuffled_logits", shuffled_logits)
         context.put(
             "speech_trait_targets",
             self._normalize_trait_targets(trait_payload),

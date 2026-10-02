@@ -362,6 +362,20 @@ class TrainingSession:
             semantic_weight_parameter=trainer.get(
                 "semantic_weight_parameter", "semantic_weight"
             ),
+            semantic_objective=trainer.get("semantic_objective", "standard"),
+            position_weight_parameters=trainer.get("position_weight_parameters"),
+            enable_audio_contrast=bool(
+                trainer.get("enable_audio_contrast", False)
+            ),
+            contrast_weight_parameter=trainer.get(
+                "contrast_weight_parameter", "semantic_contrast_weight"
+            ),
+            contrast_margin_parameter=trainer.get(
+                "contrast_margin_parameter", "semantic_contrast_margin"
+            ),
+            contrast_position_weight_parameters=trainer.get(
+                "contrast_position_weight_parameters"
+            ),
             trait_weight_parameters=trainer.get("trait_weight_parameters"),
             trait_beta_parameter=trainer.get(
                 "trait_beta_parameter", "trait_smooth_l1_beta"
