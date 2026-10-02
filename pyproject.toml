@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "li-concept-model-v2"
+version = "0.0.1"
+description = "Clean successor workspace for LI Concept Model research."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "PyYAML>=6.0",
+  "torch>=2.10",
+  "runweaver-ml>=0.1.2",
+  "transformers>=4.57,<5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]

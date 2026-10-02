@@ -1,0 +1,94 @@
+# First complete V2 recipe: cached Whisper states into a frozen Qwen core.
+
+system:
+  device: cuda
+
+models:
+  components:
+    - name: audio_provider
+      include: ../models/whisper_provider.yaml
+  language_core:
+    include: ../models/qwen_language_core.yaml
+  load_path: null
+  save_dir: experiments/audio_prefix_libritts/models
+
+datasets:
+  train:
+    requires: [audio_encoding, txt, speech_traits]
+    lazy: [audio_encoding]
+    batch_size: 1
+    op_params:
+      layout:
+        shuffle: true
+        shardshuffle: true
+        shuffle_buffer: 256
+    datasets:
+      - name: libri_tts
+        root: /home/ronald/AI/datasets/libri_tts/train
+
+  validation:
+    requires: [audio_encoding, txt, speech_traits]
+    lazy: [audio_encoding]
+    batch_size: 1
+    max_samples: 128
+    datasets:
+      - name: libri_tts
+        root: /home/ronald/AI/datasets/libri_tts/test
+
+training:
+  optimizer:
+    type: adamw
+    lr: 1.0e-4
+    weight_decay: 0.01
+
+  runtime:
+    amp:
+      enabled: true
+      dtype: bfloat16
+      grad_scaler: false
+    schedule:
+      log_every: 10
+      validate_every: 100
+      validate_max_steps: 32
+      save_every: null
+    logger:
+      output_dir: experiments/audio_prefix_libritts/logs
+      prefix: audio_prefix
+      print: true
+
+  phases:
+    - name: semantic_and_traits
+      enabled: true
+      run:
+        execution: audio_prefix
+        steps: 1000
+        batch_size: 2
+        trainable:
+          - audio_provider.input_stem
+          - audio_provider.semantic_head
+          - audio_provider.speech_trait_heads
+        trainer:
+          include_traits: true
+          semantic_weight_parameter: semantic_weight
+          trait_beta_parameter: trait_smooth_l1_beta
+          trait_weight_parameters:
+            timing: timing_weight
+            energy: energy_weight
+            pitch: pitch_weight
+            voice: voice_weight
+            temporal: temporal_weight
+          temporal_trait_groups: [timing, energy, pitch]
+          snapshot_samples: 8
+          snapshot_dir: experiments/audio_prefix_libritts/snapshots
+      targets:
+        semantic_weight: 1.0
+        trait_smooth_l1_beta: 1.0
+        # Traits are auxiliary in this first semantic-prefix experiment.
+        # Separate conservative weights prevent their summed gradients from
+        # overwhelming the semantic objective.
+        timing_weight: 0.01
+        energy_weight: 0.01
+        pitch_weight: 0.01
+        voice_weight: 0.01
+        temporal_weight: 0.01
+      schedules: {}

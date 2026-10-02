@@ -1,0 +1,37 @@
+# Paired attribution test for the first trained V2 audio provider.
+
+system:
+  device: cuda
+
+models:
+  checkpoint: experiments/audio_prefix_libritts/models/00_semantic_and_traits.pt
+  language_core:
+    include: ../models/qwen_language_core.yaml
+
+dataset:
+  # speech_traits supplies duration_s for the Whisper padding mask. Trait
+  # targets themselves are not used by this semantic attribution test.
+  requires: [audio_encoding, txt, speech_traits]
+  lazy: [audio_encoding]
+  batch_size: 2
+  datasets:
+    - name: libri_tts
+      root: /home/ronald/AI/datasets/libri_tts/test
+
+evaluation:
+  batch_size: 2
+  max_batches: 256
+  amp_enabled: true
+  amp_dtype: bfloat16
+  shuffle_seed: 1729
+  prompt: ""
+  conditions:
+    - correct
+    - shuffled_prefix
+    - zero_prefix
+    - no_prefix
+    - shuffled_frames
+
+output:
+  directory: experiments/audio_prefix_libritts/evaluation
+  prefix: audio_conditioning

@@ -1,0 +1,34 @@
+# Attribution evaluation for the semantic-specialization checkpoint.
+
+system:
+  device: cuda
+
+models:
+  checkpoint: experiments/audio_prefix_semantic_specialization/models/00_semantic_specialization.pt
+  language_core:
+    include: ../models/qwen_language_core.yaml
+
+dataset:
+  requires: [audio_encoding, txt, speech_traits]
+  lazy: [audio_encoding]
+  datasets:
+    - name: libri_tts
+      root: /home/ronald/AI/datasets/libri_tts/test
+
+evaluation:
+  batch_size: 2
+  max_batches: 256
+  amp_enabled: true
+  amp_dtype: bfloat16
+  shuffle_seed: 1729
+  prompt: ""
+  conditions:
+    - correct
+    - shuffled_prefix
+    - zero_prefix
+    - no_prefix
+    - shuffled_frames
+
+output:
+  directory: experiments/audio_prefix_semantic_specialization/evaluation
+  prefix: audio_conditioning

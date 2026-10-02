@@ -1,0 +1,78 @@
+# Phase 2: specialize only the semantic head from the immutable 1k baseline.
+
+system:
+  device: cuda
+
+models:
+  # TrainingModelWrapper.load reconstructs the provider from this bundle.
+  components:
+    - name: audio_provider
+      include: ../models/whisper_provider.yaml
+  language_core:
+    include: ../models/qwen_language_core.yaml
+  load_path: experiments/audio_prefix_libritts/models/00_semantic_and_traits.pt
+  save_dir: experiments/audio_prefix_semantic_specialization/models
+
+datasets:
+  train:
+    # speech_traits remains required only because it carries duration_s.
+    requires: [audio_encoding, txt, speech_traits]
+    lazy: [audio_encoding]
+    batch_size: 2
+    op_params:
+      layout:
+        shuffle: true
+        shardshuffle: true
+        shuffle_buffer: 256
+    datasets:
+      - name: libri_tts
+        root: /home/ronald/AI/datasets/libri_tts/train
+
+  validation:
+    requires: [audio_encoding, txt, speech_traits]
+    lazy: [audio_encoding]
+    batch_size: 2
+    max_samples: 512
+    datasets:
+      - name: libri_tts
+        root: /home/ronald/AI/datasets/libri_tts/test
+
+training:
+  optimizer:
+    type: adamw
+    lr: 5.0e-5
+    weight_decay: 0.01
+
+  runtime:
+    amp:
+      enabled: true
+      dtype: bfloat16
+      grad_scaler: false
+    schedule:
+      log_every: 10
+      validate_every: 250
+      validate_max_steps: 64
+      save_every: 500
+    logger:
+      output_dir: experiments/audio_prefix_semantic_specialization/logs
+      prefix: semantic_specialization
+      print: true
+
+  phases:
+    - name: semantic_specialization
+      enabled: true
+      run:
+        execution: audio_prefix
+        steps: 2000
+        batch_size: 2
+        trainable:
+          - audio_provider.semantic_head
+        trainer:
+          include_traits: false
+          semantic_weight_parameter: semantic_weight
+          snapshot_samples: 8
+          snapshot_dir: experiments/audio_prefix_semantic_specialization/snapshots
+      targets:
+        semantic_weight: 1.0
+      schedules: {}
+
